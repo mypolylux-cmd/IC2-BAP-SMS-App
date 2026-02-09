@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>IC2-BAP-SMS</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f4f4f4; }
+    h1 { font-size: 1.4rem; margin-bottom: 0.8rem; }
+
+    .row { display: flex; gap: 0.5rem; }
+    .row > div { flex: 1; }
+
+    .section {
+      background: #fff; padding: 0.8rem 1rem; margin-bottom: 0.8rem;
+      border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }
+
+    label { display: block; margin: 0.3rem 0 0.1rem; font-size: 0.9rem; }
+
+    select, input[type="text"], textarea {
+      width: 100%; padding: 0.4rem; font-size: 1rem;
+      margin-bottom: 0.3rem; box-sizing: border-box;
+    }
+
+    button {
+      cursor: pointer; border-radius: 4px; border: none;
+      padding: 0.5rem 0.8rem; font-size: 1rem;
+    }
+
+    #alarmButton {
+      width: 100%; background: #c62828; color: #fff;
+      font-size: 1.2rem; padding: 0.8rem; margin-bottom: 0.8rem;
+    }
+
+    .drink-grid { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+    .drink-btn {
+      flex: 1 0 45%; text-align: center; padding: 0.5rem;
+      color: #fff; font-weight: 500; user-select: none;
+    }
+
+    .drink-btn span { display: block; font-size: 0.8rem; opacity: 0.8; }
+
+    #smsPreview { width: 100%; min-height: 6rem; font-family: monospace; }
+
+    #statusMessage {
+      margin-top: 0.3rem; font-size: 0.9rem;
+      color: #2e7d32; display: none;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>IC2-BAP-SMS</h1>
+
+<button id="alarmButton">Stiller Alarm</button>
+
+<!-- Wagen & Platz oben -->
+<div class="section">
+  <div class="row">
+    <div>
+      <label>Wagen oben</label>
+      <select id="wagenOben"></select>
+    </div>
+    <div>
+      <label>Platz oben</label>
+      <select id="platzOben"></select>
+    </div>
+  </div>
+</div>
+
+<!-- Wagen & Platz unten -->
+<div class="section">
+  <div class="row">
+    <div>
+      <label>Wagen unten</label>
+      <select id="wagenUnten"></select>
+    </div>
+    <div>
+      <label>Platz unten</label>
+      <select id="platzUnten"></select>
+    </div>
+  </div>
+</div>
+
+<!-- Kontakte -->
+<div class="section">
+  <label>Empfänger</label>
+  <select id="contactSelect"></select>
+
+  <label>Neuer Kontaktname</label>
+  <input type="text" id="newContactName">
+
+  <label>Nummer</label>
+  <input type="text" id="newContactNumber">
+
+  <button id="addContact">Kontakt hinzufügen</button>
+  <small id="lastNumberInfo"></small>
+</div>
+
+<!-- Getränke -->
+<div class="section">
+  <label>Getränke</label>
+  <div id="drinkGrid" class="drink-grid"></div>
+  <div id="freitextContainer"></div>
+</div>
+
+<!-- SMS -->
+<div class="section">
+  <label>Vorschau</label>
+  <textarea id="smsPreview" readonly></textarea>
+  <button id="sendButton">SMS senden</button>
+  <div id="statusMessage">✓ Bestellung gesendet</div>
+</div>
+
+<script>
+/* Platzbereiche */
+const platzbereiche = {
+  1: { unten: [11, 26], oben: [101, 175] },
+  2: { unten: [11, 94], oben: [105, 197] },
+  3: { unten: [11, 94], oben: [105, 197] },
+  4: { unten: [11, 94], oben: [105, 197] },
+  5: { unten: [13, 86], oben: [101, 166] }
+};
+
+/* DOM */
+const wagenOben = document.getElementById("wagenOben");
+const platzOben = document.getElementById("platzOben");
+const wagenUnten = document.getElementById("wagenUnten");
+const platzUnten = document.getElementById("platzUnten");
+
+const contactSelect = document.getElementById("contactSelect");
+const newContactName = document.getElementById("newContactName");
+const newContactNumber = document.getElementById("newContactNumber");
+const addContact = document.getElementById("addContact");
+
+const drinkGrid = document.getElementById("drinkGrid");
+const freitextContainer = document.getElementById("freitextContainer");
+
+const smsPreview = document.getElementById("smsPreview");
+const sendButton = document.getElementById("sendButton");
+const alarmButton = document.getElementById("alarmButton");
+const statusMessage = document.getElementById("statusMessage");
+const lastNumberInfo = document.getElementById("lastNumberInfo");
+
+/* Kontakte */
+let contacts = JSON.parse(localStorage.getItem("ic2_contacts") || "[]");
+let drinks = {};
+let orderStart = null;
+
+function renderContacts() {
+  contactSelect.innerHTML = "";
+  contacts.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c.number;
+    opt.textContent = `${c.name} (${c.number})`;
+    contactSelect.appendChild(opt);
+  });
+
+  const last = localStorage.getItem("ic2_last");
+  if (last) {
+    lastNumberInfo.textContent = "Zuletzt verwendet: " + last;
+    const found = [...contactSelect.options].find(o => o.value === last);
+    if (found) contactSelect.value = last;
+  }
+}
+
+addContact.onclick = () => {
+  if (!newContactName.value || !newContactNumber.value) return;
+  contacts.push({ name: newContactName.value, number: newContactNumber.value });
+  localStorage.setItem("ic2_contacts", JSON.stringify(contacts));
+  newContactName.value = "";
+  newContactNumber.value = "";
+  renderContacts();
+};
+
+/* Wagen & Platz */
+function fillWagen(select) {
+  select.innerHTML = "";
+  for (let i = 1; i <= 5; i++) {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = "Wagen " + i;
+    select.appendChild(opt);
+  }
+}
+
+function fillPlaetze(wagen, deck, select) {
+  const [start, end] = platzbereiche[wagen][deck];
+  select.innerHTML = "";
+  for (let p = start; p <= end; p++) {
+    const opt = document.createElement("option");
+    opt.value = p;
+    opt.textContent = p;
+    select.appendChild(opt);
+  }
+}
+
+function updatePlaetze() {
+  fillPlaetze(parseInt(wagenOben.value), "oben", platzOben);
+  fillPlaetze(parseInt(wagenUnten.value), "unten", platzUnten);
+  updateSMS();
+}
+
+/* Getränke */
+const drinkList = [
+  ["Kaffee", "#6f4e37"],
+  ["Tee Schwarz", "#4e342e"],
+  ["Tee Grün", "#2e7d32"],
+  ["Trinkschokolade", "#5d4037"],
+  ["Wasser Still", "#64b5f6"],
+  ["Wasser Sprudel", "#1976d2"],
+  ["Cola", "#b71c1c"],
+  ["Apfelsaftschorle", "#fdd835"],
+  ["Zitronenlimonade", "#ffee58"],
+  ["Bier 🍺", "#f9a825"],
+  ["Sekt", "#fbc02d"],
+  ["Wein", "#f7e27c"]
+];
+
+function renderDrinks() {
+  drinkGrid.innerHTML = "";
+  drinkList.forEach(([name, color]) => {
+    const btn = document.createElement("button");
+    btn.className = "drink-btn";
+    btn.style.background = color;
+    btn.dataset.drink = name;
+    btn.innerHTML = `${name}<span>(0)</span>`;
+    drinkGrid.appendChild(btn);
+  });
+
+  const freeBtn = document.createElement("button");
+  freeBtn.className = "drink-btn";
+  freeBtn.style.background = "#00796b";
+  freeBtn.dataset.drink = "FREITEXT";
+  freeBtn.innerHTML = `Freitext<span>(0)</span>`;
+  drinkGrid.appendChild(freeBtn);
+}
+
+function updateDrinkButtons() {
+  document.querySelectorAll(".drink-btn").forEach(btn => {
+    const drink = btn.dataset.drink;
+    const count = drinks[drink] || 0;
+    btn.querySelector("span").textContent = `(${count})`;
+  });
+}
+
+drinkGrid.addEventListener("click", e => {
+  const btn = e.target.closest(".drink-btn");
+  if (!btn) return;
+
+  const drink = btn.dataset.drink;
+
+  if (drink === "FREITEXT") {
+    btn.style.display = "none";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Getränk eingeben…";
+    freitextContainer.innerHTML = "";
+    freitextContainer.appendChild(input);
+
+    input.onchange = () => {
+      const label = input.value.trim();
+      if (!label) {
+        btn.style.display = "block";
+        freitextContainer.innerHTML = "";
+        return;
+      }
+      drinks[label] = (drinks[label] || 0) + 1;
+      freitextContainer.innerHTML = "";
+      btn.style.display = "block";
+      updateDrinkButtons();
+      updateSMS();
+    };
+    return;
+  }
+
+  drinks[drink] = (drinks[drink] || 0) + 1;
+  updateDrinkButtons();
+  updateSMS();
+});
+
+/* Langdruck = Reset */
+let pressTimer;
+drinkGrid.addEventListener("touchstart", e => {
+  const btn = e.target.closest(".drink-btn");
+  if (!btn) return;
+  const drink = btn.dataset.drink;
+
+  pressTimer = setTimeout(() => {
+    drinks[drink] = 0;
+    updateDrinkButtons();
+    updateSMS();
+  }, 600);
+});
+
+drinkGrid.addEventListener("touchend", () => clearTimeout(pressTimer));
+
+/* SMS */
+function updateSMS() {
+  let ort = "";
+
+  if (platzOben.value) {
+    ort = `__Wagen ${wagenOben.value} oben Platz ${platzOben.value}__`;
+  } else if (platzUnten.value) {
+    ort = `__Wagen ${wagenUnten.value} unten Platz ${platzUnten.value}__`;
+  }
+
+  let drinkLines = Object.entries(drinks)
+    .filter(([k,v]) => v > 0)
+    .map(([k,v]) => `${k} (${v})`)
+    .join("\n");
+
+  if (!drinkLines) drinkLines = "";
+
+  smsPreview.value = `${ort}\n${drinkLines}`;
+}
+
+sendButton.onclick = () => {
+  const number = contactSelect.value;
+  if (number) localStorage.setItem("ic2_last", number);
+
+  const text = smsPreview.value;
+  window.location.href = `sms:${number}?&body=${encodeURIComponent(text)}`;
+
+  /* Reset nach Senden */
+  drinks = {};
+  updateDrinkButtons();
+  smsPreview.value = "";
+
+  statusMessage.style.display = "block";
+  setTimeout(() => statusMessage.style.display = "none", 3000);
+};
+
+alarmButton.onclick = () => {
+  const number = contactSelect.value;
+  if (number) localStorage.setItem("ic2_last", number);
+
+  const text = "**StillerAlarm – Bitte Kommen**";
+  window.location.href = `sms:${number}?&body=${encodeURIComponent(text)}`;
+
+  statusMessage.style.display = "block";
+  setTimeout(() => statusMessage.style.display = "none", 3000);
+};
+
+/* Init */
+fillWagen(wagenOben);
+fillWagen(wagenUnten);
+updatePlaetze();
+renderContacts();
+renderDrinks();
+updateDrinkButtons();
+
+wagenOben.onchange = updatePlaetze;
+wagenUnten.onchange = updatePlaetze;
+platzOben.onchange = updateSMS;
+platzUnten.onchange = updateSMS;
+
+</script>
+</body>
+</html>
